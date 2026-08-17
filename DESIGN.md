@@ -55,10 +55,12 @@ Themes include head highlight, trail gradient, and background color:
 
 - `+` / `=`: Increase falling speed.
 - `-` / `_`: Decrease falling speed.
+- `s`: Toggle auto Star background effect.
+- `]` / `[`: Increase or decrease automatic Star max limit.
+- `Space`: Manually trigger a random column head flash.
 - `c`: Cycle through color themes.
 - `r`: Reset to default Matrix settings (Classic theme, default speed).
-- `q` / `Esc` / `Ctrl+C`: Safely exit and
-  restore terminal state using
+- `q` / `Esc` / `Ctrl+C`: Safely exit and restore terminal state using
   `screen.Fini()`.
 
 ## 7. Config File and CLI Specification
@@ -75,7 +77,14 @@ Themes include head highlight, trail gradient, and background color:
   {
     "speed": 5,
     "color_theme": "Classic",
-    "ascii_only": false
+    "ascii_only": false,
+    "star_mode": false,
+    "star_count": 7,
+    "crt_mode": false,
+    "t1_percent": 30,
+    "t2_percent": 50,
+    "true_color": true,
+    "gradient_mode": 1
   }
   ```
 
@@ -88,9 +97,38 @@ Themes include head highlight, trail gradient, and background color:
   If missing, install via `sudo apt install fonts-noto-cjk`.
 - **CGO**: Not required. The engine relies on pure Go `tcell`.
 
+## 9. File Structure and Responsibilities
+
+- `config.go`: Configuration structures, JSON parsing, and bounds sanitization.
+- `config_test.go`: Unit tests for configuration parsing.
+- `engine.go`: Core matrix logic, state updates, random range math,
+  and layout calculation.
+- `engine_test.go`: Unit tests for matrix state updates.
+- `main.go`: Entry point, lifecycle management, and keyboard event loop.
+- `main_test.go`: Unit tests for main entry logic.
+- `theme.go`: Color palettes and theme management.
+- `theme_test.go`: Unit tests for theme configurations.
+- `ui.go`: Rendering layer, responsible for gradient math (`getStyle`,
+  `lerpColor`, `clampFloat`) and drawing the screen.
+- `ui_test.go`: Unit tests for gradient boundary logic and UI constraints.
+- `version.go`: Stores the application version string.
+
 ---
 
 ## gomatrix 完整開發規格書
+### 零、 系統架構與檔案職責
+
+- `config.go`：設定檔結構、JSON 解析模組與邊界防呆 (`sanitizeConfig`, `clampSpeed`)。
+- `config_test.go`：設定檔解析模組之單元測試。
+- `engine.go`：核心引擎，管理矩陣狀態更新、亂數邏輯 (`randomRange`) 與排版。
+- `engine_test.go`：引擎狀態更新邏輯之單元測試。
+- `main.go`：程式進入點，負責初始化、生命週期與按鍵迴圈 (`cycleNext`)。
+- `main_test.go`：主程式邏輯之單元測試。
+- `theme.go`：色彩與主題配套配置管理。
+- `theme_test.go`：主題配置之單元測試。
+- `ui.go`：介面層，專責漸層數學運算 (`getStyle`, `clampFloat`) 與畫面繪製。
+- `ui_test.go`：介面單元測試，驗證漸層邊界邏輯與 Config 配置正確性。
+- `version.go`：儲存應用程式之版本字串。
 
 ### 一、 專案基本資訊與目標平台
 
@@ -143,7 +181,13 @@ Themes include head highlight, trail gradient, and background color:
 
 - `+` / `=`：增加下落速度
 - `-` / `_`：降低下落速度
+- `s`：開啟或關閉自動星星 (Star) 背景特效
+- `]` / `[`：增加或減少星星的數量上限
+- `Space`：手動觸發隨機一條瀑布的頭部閃爍
 - `c`：循環切換主題色彩配套
+- `m`：切換漸層過渡模式（Classic, Smooth, VerySmooth）
+- `t`：切換漸層渲染引擎（TrueColor, Dithering）
+- `h`：開啟或關閉多行說明選單
 - `r`：重置為 Matrix 預設設定（Classic 主題 + 預設速度）
 - `q` / `Esc` / `Ctrl+C`：安全退出程式（執行 `screen.Fini()` 恢復原終端機畫面）
 
@@ -160,7 +204,14 @@ Themes include head highlight, trail gradient, and background color:
   {
     "speed": 5,
     "color_theme": "Classic",
-    "ascii_only": false
+    "ascii_only": false,
+    "star_mode": false,
+    "star_count": 7,
+    "crt_mode": false,
+    "t1_percent": 30,
+    "t2_percent": 50,
+    "true_color": true,
+    "gradient_mode": 1
   }
   ```
 
@@ -168,9 +219,27 @@ Themes include head highlight, trail gradient, and background color:
 
 ### 八、 環境檢查步驟 (Debian/Ubuntu/PiOS)
 
-- **編譯器檢查**：使用 `go version` 確認 Go 環境 (需 1.21+)。
+- **編譯器檢查**：使用 `go version` 確認 Go 環境 (需 1.24+)。
   若缺失，可透過 `sudo apt install golang-go` 安裝。
 - **字型檢查**：使用 `dpkg -l | grep fonts-noto-cjk` 檢查是否具備半角假名
   顯示能力。
   若缺失，可透過 `sudo apt install fonts-noto-cjk` 安裝。
 - **CGO 依賴**：無。`tcell` 於 Linux 平台為純 Go 實作，無需額外 C 編譯器。
+
+### 九、 漸層渲染與邊界防護規格
+
+- **色彩錨點 (Color Anchors)**：
+  藉由 `t1_percent` 與 `t2_percent` 定義純色段的物理位置。
+- **漸層模式 (Gradient Modes)**：
+  - `Classic` (0)：錨點作為絕對邊界，瞬間切斷無過渡。
+  - `Smooth` (1)：錨點前後建立 45% 緩衝區 (`BufferSmooth`) 進行平滑混色。
+  - `VerySmooth` (2)：錨點作為 100% 濃度極值，區段間全範圍連續漸層。
+- **渲染引擎 (Render Engines)**：
+  - `TrueColor`：運用線性內插 (Lerp) 即時計算 RGB 中間色。
+  - `Dithering`：依比例作為機率權重，隨機交錯相鄰純色，相容於舊終端機。
+- **邊界防護 (Boundary Defenses)**：
+  - **設定檔防呆 (`sanitizeConfig`)**：強制修正負數、超出 100%、或邏輯倒置的 T1/T2，
+    並確保模式列舉不越界。
+  - **數學箝制 (`clampFloat`)**：嚴格限制內插比例 `p` 在 `0.0~1.0` 之間，
+    根絕 `tcell` 底層 RGB 位移損毀 (Bitmask Corruption) 與 Panic 的風險。
+  - **除以零防禦**：確保長度計算時 `length <= 0` 不會觸發 Panic。

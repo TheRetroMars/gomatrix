@@ -5,44 +5,84 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 )
 
 // MinSpeed is the lowest allowed speed level.
-// MaxSpeed is the highest allowed speed level.
 // DefaultSpeed is the initial speed on startup.
-// ColorTailT1 is the tail age threshold for the first trail color tier.
-// ColorTailT2 is the tail age threshold for the second trail color tier.
 const (
-	MinSpeed     = 1
-	MaxSpeed     = 10
-	DefaultSpeed = 5
-	ColorTailT1  = 5
-	ColorTailT2  = 10
+	MinSpeed       = 1
+	MaxSpeed       = 10
+	DefaultSpeed   = 8
+	MinStarCount   = 1
+	MaxStarCount   = 20
+	DefaultStarCnt = 7
+
+	DefaultT1Percent = 30
+	DefaultT2Percent = 50
+
+	ModeClassic    = 0
+	ModeSmooth     = 1
+	ModeVerySmooth = 2
+
+	BufferSmooth  = 45.0
+	MaxPercent    = 100.0
+	MinRatio      = 0.0
+	MaxRatio      = 1.0
+	HelpMenuWidth = 32
+
+	msgThemePrefix = "Theme: "
+	msgCRTOff      = "CRT Effect: OFF"
+	msgCRTOn       = "CRT Effect: ON"
+	msgStarOff     = "Star: OFF"
+	msgStarOn      = "Star: ON"
+	msgStarMax     = "Star Max: %d"
+	themeClassic   = "Classic"
+
+	msgGradientPrefix = "Gradient: "
+	msgTypeTrueColor  = "Render: TrueColor"
+	msgTypeDithering  = "Render: Dithering"
+	msgHelpWarning    = "Screen too small for help"
 )
 
-// SpeedDelays maps speed levels (1-10) to their corresponding tick intervals.
+var helpText = []string{
+	"  [h, ?]     Toggle Help      ",
+	"  [Space]    Trigger Flash    ",
+	"  [+, =]     Speed Up         ",
+	"  [-, _]     Speed Down       ",
+	"  [c]        Change Theme     ",
+	"  [r]        Reset State      ",
+	"  [g]        Toggle CRT Mode  ",
+	"  [s]        Toggle Star Mode ",
+	"  [[, ]]     Adjust Star Max  ",
+	"  [m]        Gradient Mode    ",
+	"  [t]        Render Engine    ",
+	"  [q, Esc]   Quit             ",
+}
+
+// SpeedDelays maps speed levels to their corresponding tick intervals.
 var SpeedDelays = []time.Duration{
-	1000 * time.Millisecond, 800 * time.Millisecond, 600 * time.Millisecond,
-	450 * time.Millisecond, 300 * time.Millisecond, 200 * time.Millisecond,
-	150 * time.Millisecond, 100 * time.Millisecond, 75 * time.Millisecond,
+	60000 * time.Millisecond, 45000 * time.Millisecond,
+	30000 * time.Millisecond, 15000 * time.Millisecond,
+	10000 * time.Millisecond, 5000 * time.Millisecond,
+	2000 * time.Millisecond, 1000 * time.Millisecond,
+	800 * time.Millisecond, 600 * time.Millisecond,
+	450 * time.Millisecond, 300 * time.Millisecond,
+	200 * time.Millisecond, 150 * time.Millisecond,
+	100 * time.Millisecond, 75 * time.Millisecond,
 	50 * time.Millisecond,
 }
 
 var themes = []string{"Classic", "AntiGravity", "QuantumGold", "Cyberpunk"}
+var gradientModes = []string{"Classic", "Smooth", "VerySmooth"}
 
-// clampSpeed constrains speed to
-// [MinSpeed, MaxSpeed].
-func clampSpeed(s int) int {
-	if s < MinSpeed {
-		return MinSpeed
-	}
-	if s > MaxSpeed {
-		return MaxSpeed
-	}
-	return s
+// applyTheme applies the selected theme to the configuration and engine.
+func applyTheme(cfg *Config, engine *Engine, themeName string) {
+	cfg.ColorTheme = themeName
+	engine.Theme = getTheme(themeName)
 }
 
 // adjustSpeed adjusts cfg.Speed by delta,
@@ -65,75 +105,75 @@ func handleKeyEvent(
 	ticker *time.Ticker,
 	engine *Engine,
 	themeIdx *int,
-) (forceRedraw bool, quit bool) {
+) (forceRedraw bool, quit bool, spdChg bool, msg string) {
+	if engine.ShowHelp {
+		engine.ToggleHelp()
+		return true, false, false, ""
+	}
 	switch ev.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
-		return false, true
+		return false, true, false, ""
 	}
 	switch ev.Rune() {
+	case 'h', '?':
+		engine.ToggleHelp()
+		return true, false, false, ""
+	case 'm':
+		engine.ToggleGradientMode(len(gradientModes))
+		return true, false, false, msgGradientPrefix + gradientModes[engine.GradientMode]
+	case 't':
+		engine.ToggleTrueColor()
+		if engine.UseTrueColor {
+			return true, false, false, msgTypeTrueColor
+		}
+		return true, false, false, msgTypeDithering
+	case ' ':
+		engine.TriggerFlash()
+		return false, false, false, ""
 	case 'q':
-		return false, true
+		return false, true, false, ""
 	case '+', '=':
 		adjustSpeed(cfg, ticker, 1)
+		return true, false, true, ""
 	case '-', '_':
 		adjustSpeed(cfg, ticker, -1)
+		return true, false, true, ""
 	case 'c':
-		*themeIdx = (*themeIdx + 1) % len(themes)
-		cfg.ColorTheme = themes[*themeIdx]
-		engine.Theme = getTheme(cfg.ColorTheme)
-		return true, false
+		*themeIdx = cycleNext(*themeIdx, len(themes))
+		applyTheme(cfg, engine, themes[*themeIdx])
+		return true, false, false, msgThemePrefix + themes[*themeIdx]
 	case 'r':
 		cfg.Speed = DefaultSpeed
 		ticker.Reset(SpeedDelays[cfg.Speed-1])
 		*themeIdx = 0
-		cfg.ColorTheme = "Classic"
-		engine.Theme = getTheme(cfg.ColorTheme)
-		return true, false
-	}
-	return false, false
-}
-
-// renderScreen draws changed cells to the
-// screen and returns true if any cell was
-// updated.
-func renderScreen(
-	screen tcell.Screen,
-	engine *Engine,
-	oldGrid []Cell,
-	forceRedraw bool,
-) bool {
-	rendered := false
-	for x := 0; x < engine.Width; x++ {
-		for y := 0; y < engine.Height; y++ {
-			idx := x*engine.Height + y
-			if idx >= len(engine.Grid) || idx >= len(oldGrid) {
-				continue // Guard against out-of-bounds access after resize.
-			}
-			c := engine.Grid[idx]
-			if !forceRedraw && oldGrid[idx] == c {
-				continue
-			}
-			oldGrid[idx] = c
-			rendered = true
-
-			st := tcell.StyleDefault.Background(engine.Theme.Bg)
-			if c.Char == ' ' {
-				screen.SetContent(x, y, ' ', nil, st)
-				continue
-			}
-			if c.Head {
-				st = st.Foreground(engine.Theme.Head)
-			} else if c.Tail < ColorTailT1 {
-				st = st.Foreground(engine.Theme.T1)
-			} else if c.Tail < ColorTailT2 {
-				st = st.Foreground(engine.Theme.T2)
-			} else {
-				st = st.Foreground(engine.Theme.T3)
-			}
-			screen.SetContent(x, y, c.Char, nil, st)
+		applyTheme(cfg, engine, themeClassic)
+		return true, false, true, ""
+	case 'g':
+		engine.ToggleCRTMode()
+		if engine.CRTMode {
+			return true, false, false, msgCRTOn
 		}
+		return true, false, false, msgCRTOff
+	case 's':
+		engine.ToggleStarMode()
+		if engine.StarMode {
+			return true, false, false, msgStarOn
+		}
+		return true, false, false, msgStarOff
+	case ']':
+		if !engine.StarMode {
+			return false, false, false, ""
+		}
+		engine.IncrementStarCount(MaxStarCount)
+		return true, false, false, fmt.Sprintf(msgStarMax, engine.StarCount)
+	case '[':
+		if !engine.StarMode {
+			return false, false, false, ""
+		}
+		engine.DecrementStarCount(MinStarCount)
+		return true, false, false, fmt.Sprintf(msgStarMax, engine.StarCount)
 	}
-	return rendered
+	return false, false, false, ""
 }
 
 // parseFlags configures the CLI flags, sets a
@@ -162,6 +202,32 @@ func parseFlags() string {
 	return *configPath
 }
 
+// formatFloat formats a float to max 3 decimal places.
+func formatFloat(v float64) string {
+	s := fmt.Sprintf("%.3f", v)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimRight(s, ".")
+}
+
+// setOverlayMsg updates the overlay message and sets a 1-second timeout.
+func setOverlayMsg(msg string, target *string, ch *<-chan time.Time) {
+	*target = msg
+	*ch = time.After(1 * time.Second)
+}
+
+// cycleNext returns the next index in a circular array of size count.
+func cycleNext(current, count int) int {
+	if count <= 0 {
+		return current
+	}
+	stepForward := 1
+	return (current + stepForward) % count
+}
+
+
+
+// main initializes the configuration, sets up the terminal screen,
+// and starts the main event loop for rendering the matrix effect.
 func main() {
 	configPath := parseFlags()
 
@@ -169,8 +235,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-
-	cfg.Speed = clampSpeed(cfg.Speed)
 
 	screen, err := tcell.NewScreen()
 	if err != nil {
@@ -183,6 +247,18 @@ func main() {
 
 	w, h := screen.Size()
 	engine := NewEngine(w, h, getTheme(cfg.ColorTheme), cfg.ASCIIOnly)
+	engine.StarMode = cfg.StarMode
+	if cfg.StarCount < MinStarCount {
+		cfg.StarCount = MinStarCount
+	} else if cfg.StarCount > MaxStarCount {
+		cfg.StarCount = MaxStarCount
+	}
+	engine.StarCount = cfg.StarCount
+	engine.CRTMode = cfg.CRTMode
+	engine.T1Percent = cfg.T1Percent
+	engine.T2Percent = cfg.T2Percent
+	engine.UseTrueColor = cfg.TrueColor
+	engine.GradientMode = cfg.GradientMode
 	themeIdx := 0
 	for i, t := range themes {
 		if t == cfg.ColorTheme {
@@ -198,6 +274,9 @@ func main() {
 	defer ticker.Stop()
 	eventCh := make(chan tcell.Event)
 
+	var overlayMsg string
+	var clearMsgCh <-chan time.Time
+
 	go func() {
 		for {
 			eventCh <- screen.PollEvent()
@@ -205,27 +284,47 @@ func main() {
 	}()
 
 	for {
+		draw := false
 		select {
 		case ev := <-eventCh:
 			switch ev := ev.(type) {
 			case *tcell.EventKey:
-				force, quit := handleKeyEvent(ev, cfg, ticker, engine, &themeIdx)
+				force, quit, spd, msg := handleKeyEvent(
+					ev, cfg, ticker, engine, &themeIdx)
 				if quit {
 					return
 				}
-				if force {
+				if spd {
+					delay := float64(SpeedDelays[cfg.Speed-1].Milliseconds())
+					msg = fmt.Sprintf("%s Sec/Frame", formatFloat(delay/1000.0))
+				}
+				if msg != "" {
+					setOverlayMsg(msg, &overlayMsg, &clearMsgCh)
+				}
+				if force || msg != "" {
 					forceRedraw = true
+					draw = true
 				}
 			case *tcell.EventResize:
 				nw, nh := screen.Size()
 				engine.resize(nw, nh)
 				oldGrid = make([]Cell, nw*nh)
 				forceRedraw = true
+				draw = true
 				screen.Sync()
 			}
+		case <-clearMsgCh:
+			overlayMsg = ""
+			forceRedraw = true
+			clearMsgCh = nil
+			draw = true
 		case <-ticker.C:
 			engine.Step()
-			if renderScreen(screen, engine, oldGrid, forceRedraw) {
+			draw = true
+		}
+
+		if draw {
+			if renderScreen(screen, engine, oldGrid, forceRedraw, overlayMsg) {
 				screen.Show()
 				forceRedraw = false
 			}

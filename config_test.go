@@ -9,15 +9,15 @@ import (
 // TestLoadConfig_Defaults verifies that loadConfig returns the default values
 // when no config file is found.
 func TestLoadConfig_Defaults(t *testing.T) {
-	cfg, err := loadConfig("")
+	cfg, err := loadConfig("nonexistent_path")
 	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+		t.Fatalf("expected no error for missing config, got %v", err)
 	}
-	if cfg.Speed != 5 {
-		t.Errorf("expected default speed 5, got %d", cfg.Speed)
+	if cfg.Speed != DefaultSpeed {
+		t.Errorf("expected default speed %d, got %d", DefaultSpeed, cfg.Speed)
 	}
 	if cfg.ColorTheme != "Classic" {
-		t.Errorf("expected default Classic, got %s", cfg.ColorTheme)
+		t.Errorf("expected default theme Classic, got %s", cfg.ColorTheme)
 	}
 }
 
